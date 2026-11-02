@@ -3813,8 +3813,17 @@
       Va(Ye=Math.max(0,Math.min(t-1,Ye+e*a)),t)
     }
   }
+  var hlsPlayer=null,nativeFallbackSrc="";
   function gr() {
     "vod"===$.playerMode&&Se&&Fi(er?tr+(Se.currentTime||0):Se.currentTime||0,Se&&isFinite(Se.duration)&&Se.duration>0?Se.duration:Ua($.playerEpisode&&$.playerEpisode.duration||$.playerItem&&$.playerItem.duration||0),!0);
+    if(hlsPlayer) {
+      try {
+        hlsPlayer.stopLoad(),hlsPlayer.detachMedia(),hlsPlayer.destroy()
+      }
+      catch(e) {
+      }
+      hlsPlayer=null
+    }
     $.streamError="",rr(),mr(""),za("none"),Fa(),ir&&(clearTimeout(ir),ir=null,ar=0),dr(),er="",tr=0,Zn++;
     var e=Kn;
     if(!e&&Yn&&-1!==Yn.indexOf("127.0.0.1")) {
@@ -3870,11 +3879,26 @@
       }
       catch(e) {
       }
-      var r=$.playerItem&&$.playerItem.streamMime||"",o=-1!==e.indexOf(".m3u8")||-1!==r.indexOf("mpegurl")||!(!$.playerItem||!$.playerItem.isHls),s=o?"application/vnd.apple.mpegurl":-1!==e.indexOf(".mp4")||-1!==r.indexOf("mp4")?"video/mp4":"video/mp2t";
+      var r=$.playerItem&&$.playerItem.streamMime||"",o=-1!==e.indexOf(".m3u8")||-1!==r.indexOf("mpegurl")||!(!$.playerItem||!$.playerItem.isHls),s=o?"application/vnd.apple.mpegurl":-1!==e.indexOf(".mp4")||-1!==r.indexOf("mp4")?"video/mp4":"video/mp2t",useHls=!!((o||t&&t.forceHls)&&window.Hls&&Hls.isSupported());
+      window.__xuperDiag= {
+        mode:$.playerMode,engine:useHls?"hls.js":"native",mime:s,isHls:o,readyState:0,networkState:0,error:null,hlsEvents:[]
+      }
+      ;
       Se.onerror=function() {
         Tn(),dr();
         var t=Se.error&&Se.error.code;
-        if(4===t&&"vod"===$.playerMode&&"normal"===$.streamMode&&$.playerItem) {
+        window.__xuperDiag&&(window.__xuperDiag.error=t,window.__xuperDiag.readyState=Se.readyState,window.__xuperDiag.networkState=Se.networkState);
+        // Mientras hls.js tenga reintentos, dejar que su recuperacion de
+        // red/media controle el error en vez de abortar el <video>.
+        if(useHls&&hlsPlayer&&hlsErrors<2)return;
+        // VOD TS nativo (Tizen soporta HEVC/H.264 dentro de MPEG-TS): si el
+        // decodificador nativo lo rechaza, reintentar el mismo token como HLS.
+        if(4===t&&"vod"===$.playerMode&&!useHls&&$.playerItem&&$.playerItem.hlsPath&&nativeFallbackSrc!==e) {
+          return nativeFallbackSrc=e,void yr($.playerItem.hlsPath, {
+            forceHls:!0
+          })
+        }
+        if(4===t&&"vod"===$.playerMode&&"normal"===$.streamMode&&$.playerItem&&window.__XUPER_RELAY_INFO&&window.__XUPER_RELAY_INFO.relayAvailable) {
           var n=$.playerItem,r=ln(n)||an(n);
           if(tn!==r)return tn=r,$.streamMode="smooth",mr("Reintentando película en modo compatible…"),void setTimeout(function() {
             "vod"===$.playerMode&&$.playerItem===n&&"smooth"===$.streamMode&&Vn()
@@ -3884,7 +3908,7 @@
         $.streamError="No se pudo abrir el stream (código "+(t||"error")+")",Se.classList.remove("is-active"),_e&&(_e.style.display="block"),mr($.streamError)
       }
       ,Se.onloadeddata=v,Se.oncanplay=function() {
-        dr(),v()
+        window.__xuperDiag&&(window.__xuperDiag.readyState=Se.readyState,window.__xuperDiag.networkState=Se.networkState),dr(),v()
       }
       ,Se.onloadedmetadata=function() {
         if(v(),"vod"===$.playerMode&&"normal"===$.streamMode) {
@@ -3903,7 +3927,7 @@
         }
       }
       ,Se.onplaying=function() {
-        Tn(),v()
+        window.__xuperDiag&&(window.__xuperDiag.readyState=Se.readyState,window.__xuperDiag.networkState=Se.networkState,window.__xuperDiag.error=null),Tn(),v()
       }
       ,Se.onended=function() {
         "vod"===$.playerMode&&En()
@@ -3946,22 +3970,65 @@
       }
       catch(e) {
       }
-      // Samsung Tizen: asignar la URL directamente. El <source type="...;
-      // mediaOption=..."> era exclusivo de LG webOS y en Tizen falla en
-      // silencio sin disparar video.onerror.
-      try {
+      // Tizen no reproduce manifiestos HLS en <video> de forma fiable (error 4).
+      // hls.js los convierte a MSE, que si soporta el motor de la TV.
+      if(useHls) {
+        try {
+          var hlsErrors=0,h=new Hls( {
+            enableWorker:!1,lowLatencyMode:!1,backBufferLength:15,maxBufferLength:20,maxMaxBufferLength:30,maxBufferHole:.5,liveSyncDurationCount:3,liveMaxLatencyDurationCount:8,manifestLoadingTimeOut:1e4,manifestLoadingMaxRetry:2,levelLoadingTimeOut:1e4,fragLoadingTimeOut:15e3,fragLoadingMaxRetry:3
+          }
+          );
+          hlsPlayer=h,h.on(Hls.Events.MEDIA_ATTACHED,function() {
+            window.__xuperDiag&&window.__xuperDiag.hlsEvents.push("MEDIA_ATTACHED");
+            if(hlsPlayer===h&&e)try {
+              h.loadSource(e)
+            }
+            catch(t) {
+              hlsPlayer===h&&($.streamError="No se pudo abrir el flujo HLS",mr($.streamError))
+            }
+          }
+          ),h.on(Hls.Events.MANIFEST_PARSED,function() {
+            window.__xuperDiag&&window.__xuperDiag.hlsEvents.push("MANIFEST_PARSED");
+            if(hlsPlayer!==h)return;
+            hlsErrors=0;
+            try {
+              var e=Se.play();
+              e&&e.catch&&e.catch(function() {
+                Se.error||($.streamError="Pulsa OK para iniciar la reproducción",mr($.streamError))
+              }
+              )
+            }
+            catch(e) {
+            }
+          }
+          ),h.on(Hls.Events.ERROR,function(e,t) {
+            window.__xuperDiag&&window.__xuperDiag.hlsEvents.push("ERR:"+(t&&t.details||"unknown"));
+            if(hlsPlayer!==h||!t||!t.fatal)return;
+            if(t.type===Hls.ErrorTypes.NETWORK_ERROR&&hlsErrors<2)return hlsErrors++,void h.startLoad();
+            if(t.type===Hls.ErrorTypes.MEDIA_ERROR&&hlsErrors<2)return hlsErrors++,void h.recoverMediaError();
+            $.streamError="No se pudo reproducir el flujo (HLS: "+(t.details||"error")+")",Se.classList.remove("is-active"),_e&&(_e.style.display="block"),mr($.streamError)
+          }
+          ),h.attachMedia(Se)
+        }
+        catch(t) {
+          useHls=!1;
+          try {
+            Se.src=e
+          }
+          catch(e) {
+          }
+        }
+      }
+      else try {
         Se.src=e
       }
       catch(e) {
       }
-      try {
-        Se.currentTime=0
-      }
-      catch(e) {
-      }
       Se.classList.add("is-active"),_e&&(_e.style.display="none");
-      try {
-        Se.load();
+      if(!useHls)try {
+        // Solo en reproduccion nativa: tocar currentTime con un MediaSource
+        // cerrado (hls.js aun no ha parseado el manifiesto) rompe MSE en Tizen.
+        Se.currentTime=0,Se.load();
         var u=Se.play();
         u&&u.catch&&u.catch(function() {
           Se.error||($.streamError="Pulsa OK para iniciar la reproducción",mr($.streamError))
@@ -3996,7 +4063,7 @@
       O(i.forceRelay?"resolveSmooth":"resolve",i,function(i,n) {
         if(a===Zn) {
           if(i||!n||!1===n.returnValue)return $.streamError="No se pudo resolver el título"+(i?": "+i:""),mr($.streamError),t("");
-          D("vod",n),e.streamMime=n.mime||"",e.streamCodec=n.codec||"",n.duration>0?(e.duration=n.duration,$.playerEpisode&&($.playerEpisode.duration=n.duration)):e.duration=e.duration||0,e.subtitles=n.subtitles||[],e.streamAudioInfo=n.audio||e.streamAudioInfo||"",$.playerEpisode&&($.playerEpisode.streamAudioInfo=n.audio||""),e.isHls=!!n.isHls,!Ti&&n.audio&&(Ii=cn(n.audio));
+          D("vod",n),e.streamMime=n.mime||"",e.streamCodec=n.codec||"",n.duration>0?(e.duration=n.duration,$.playerEpisode&&($.playerEpisode.duration=n.duration)):e.duration=e.duration||0,e.subtitles=n.subtitles||[],e.streamAudioInfo=n.audio||e.streamAudioInfo||"",$.playerEpisode&&($.playerEpisode.streamAudioInfo=n.audio||""),e.isHls=!!n.isHls,e.hlsPath=n.hlsPath||"",!Ti&&n.audio&&(Ii=cn(n.audio));
           var r= {
             audio:n.audio||e.streamAudioInfo,subtitles:e.subtitles,tracks:n.availableTracks||[],selected:n.selectedTrack|| {
             }

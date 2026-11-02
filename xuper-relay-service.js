@@ -123,7 +123,10 @@ function readRelayConfig() {
 }
 
 var relayConfig = readRelayConfig();
-var publicHost = process.env.XUPER_PUBLIC_HOST || relayConfig.publicHost || detectLanIp();
+var isTizenEmbedded = process.env.XUPER_EMBEDDED === "1" || process.platform === "tizen";
+var publicHost = isTizenEmbedded
+  ? "127.0.0.1"
+  : process.env.XUPER_PUBLIC_HOST || relayConfig.publicHost || detectLanIp();
 process.env.XUPER_PUBLIC_HOST = publicHost;
 
 var apiPort = Number(process.env.XUPER_API_PORT) || 8910;
@@ -273,10 +276,9 @@ function resolveStream(res, p, force) {
     }
     console.log("[relay] audio disponible:", stream.audio, "-> pista seleccionada:", chosenAudio);
 
-    if (smooth) {
-      if (!relay.available()) {
-        return fail(res, new Error("Modo Fluido no disponible: ffmpeg no esta instalado en el PC del relay"));
-      }
+    // Sin ffmpeg (relay embebido en la TV) el modo fluido no puede remuxear:
+    // seguir por el proxy normal en vez de devolver un error falso.
+    if (smooth && relay.available()) {
       var relayUrl = relay.register(stream, {
         hevc: hevc,
         mode: "smooth",
@@ -327,13 +329,18 @@ function resolveStream(res, p, force) {
       proxy.start(function (perr) {
         if (perr) return fail(res, perr);
         var token = proxy.add(stream.url, stream.headers, stream.duration, ip),
-          hls = stream.mime !== "video/mp4",
-          ext = hls ? "m3u8" : "mp4";
-        // Sin ffmpeg, un TS de VOD se sirve como HLS virtual (byteranges del
-        // propio TS): el reproductor de la TV no admite MPEG-TS en <video>.
+          nativeHls = /\.m3u8(\?|$)/i.test(stream.url || "") || /mpegurl/i.test(stream.mime || ""),
+          // Samsung Tizen 2024 reproduce MPEG-TS de forma nativa (H.264 y
+          // HEVC) si el proxy entrega HTTP 206 con Content-Type video/mp2t.
+          // Evitamos el HLS virtual (lento y dependiente de hls.js) para VOD.
+          ext = nativeHls ? "m3u8" : stream.mime === "video/mp4" ? "mp4" : "ts";
         stream.proxyPath = proxy.baseUrl() + "/media/" + token + "/stream." + ext;
-        stream.isHls = hls;
-        if (hls) stream.mime = "application/x-mpegurl";
+        stream.isHls = nativeHls;
+        // Ruta alternativa para reintentar en MSE si el decodificador nativo
+        // rechaza el TS (mismo token; el proxy genera el manifiesto virtual).
+        if (!nativeHls && stream.mime !== "video/mp4") {
+          stream.hlsPath = proxy.baseUrl() + "/media/" + token + "/stream.m3u8";
+        }
         ok(res, attachSubtitles(stream));
       });
     });
@@ -357,6 +364,20 @@ routes.ping = function (res) {
     ffmpegPath: relay.path(),
     relayPort: relayPort,
     apiPort: apiPort
+  });
+};
+
+routes.health = function (res) {
+  ok(res, {
+    ok: true,
+    service: pkg.name,
+    version: pkg.version,
+    uptime: Math.floor(process.uptime()),
+    node: process.version,
+    publicHost: publicHost,
+    apiPort: apiPort,
+    proxyPort: proxy.port() || proxyPort,
+    relayAvailable: relay.available()
   });
 };
 
@@ -458,9 +479,11 @@ routes.resolveLive = function (res, p) {
       }
       proxy.start(function (perr) {
         if (perr) return fail(res, perr);
-        var token = proxy.add(data.url, data.headers, 0, ip);
-        data.proxyPath = proxy.baseUrl() + "/media/" + token + "/stream.m3u8";
-        data.isHls = true;
+        var token = proxy.add(data.url, data.headers, 0, ip),
+          isHls = /\.m3u8(\?|$)/i.test(data.url || "") || /mpegurl/i.test(data.mime || ""),
+          isMp4 = /\.mp4(\?|$)/i.test(data.url || "") || /video\/mp4/i.test(data.mime || "");
+        data.proxyPath = proxy.baseUrl() + "/media/" + token + "/stream." + (isHls ? "m3u8" : isMp4 ? "mp4" : "ts");
+        data.isHls = isHls;
         ok(res, data);
       });
     });
@@ -470,15 +493,29 @@ routes.resolveLive = function (res, p) {
     var direct = String(p.streamUrl),
       isHls = /\.m3u8(\?|$)/i.test(direct) || /application\/x-mpegurl/i.test(p.streamMime || ""),
       isTs = /\.ts(\?|$)/i.test(direct);
-    if (relay.available() && (isHls || isTs)) {
+    // Pasar siempre por el proxy: el CDN puede exigir cabeceras y la TV
+    // necesita CORS/Range. Antes se devolvia la URL cruda y fallaba con
+    // error 4 en los canales M3U.
+    if (!relay.available() || isHls || isTs) {
       return respond({
         url: direct,
         headers: {},
-        mime: isHls ? "application/x-mpegurl" : "video/mp2t",
+        mime: isHls ? "application/x-mpegurl" : isTs ? "video/mp2t" : "video/mp4",
         name: p.name || ""
       });
     }
-    return ok(res, { url: direct, proxyPath: direct, isHls: isHls });
+    // MP4 progresivo: el proxy lo sirve con Range sin ffmpeg.
+    return proxy.start(function (perr) {
+      if (perr) return fail(res, perr);
+      var token = proxy.add(direct, {}, 0, "");
+      ok(res, {
+        url: direct,
+        mime: "video/mp4",
+        proxyPath: proxy.baseUrl() + "/media/" + token + "/stream.mp4",
+        isHls: false,
+        name: p.name || ""
+      });
+    });
   }
 
   if (!p.channelCode) return fail(res, new Error("channelCode requerido"));
@@ -628,9 +665,13 @@ server.on("clientError", function (err, socket) {
 server.on("error", function (err) {
   console.error("[relay] error del servidor API:", err.message);
   if (err.code === "EADDRINUSE") {
-    console.error("[relay] el puerto " + apiPort + " ya esta en uso. Cierra la otra instancia.");
-    if (process.env.XUPER_EMBEDDED !== "1") process.exit(1);
+    // Otra instancia (normalmente la de la sesion anterior de TizenBrew)
+    // ya sirve el relay. Esta instancia no puede escuchar: salir sin
+    // dejar un proceso huerfano ni tumbar a la instancia viva.
+    console.error("[relay] el puerto " + apiPort + " ya esta en uso; hay otra instancia activa. Saliendo.");
+    process.exit(0);
   }
+  if (process.env.XUPER_EMBEDDED !== "1") process.exit(1);
 });
 
 process.on("uncaughtException", function (e) {
@@ -653,7 +694,7 @@ server.listen(apiPort, bindHost, function () {
   __define("package.json", function (module, exports, require, __dirname) {
 module.exports = {
   "name": "xupetv-relay",
-  "version": "2.2.2",
+  "version": "2.2.3",
   "description": "Relay LAN de XuperTV (catalogo Magis + proxy de streams) para la app Tizen",
   "private": true,
   "main": "server.js",
@@ -3005,7 +3046,7 @@ function sendVirtualHls(e,t,r,n) {
     n.indexer||(n.indexer=tsIndexer.create(s,function(e,t,r) {
       readRange(n,e,t,r)
     }
-    ),n.indexer.start());
+    ,n.duration),n.indexer.start());
     var a=n.indexer;
     if(a.segments.length||a.complete) {
       for(var i=["#EXTM3U","#EXT-X-VERSION:4","#EXT-X-PLAYLIST-TYPE:VOD","#EXT-X-TARGETDURATION:"+HLS_SEGMENT_SECONDS,"#EXT-X-MEDIA-SEQUENCE:0"],l=0;
@@ -3056,6 +3097,10 @@ function rewriteHlsManifest(e,t,r) {
   }
   return n.join("\n")
 }
+function contentTypeFor(sourceUrl,upstreamType) {
+  var type=String(upstreamType||"").toLowerCase(),target=String(sourceUrl||"").toLowerCase();
+  return -1!==type.indexOf("mpegurl")||/\.m3u8(\?|$)/.test(target)?"application/vnd.apple.mpegurl":-1!==type.indexOf("mp4")||/\.m4v(\?|$)/.test(target)||/\.mp4(\?|$)/.test(target)?"video/mp4":-1!==type.indexOf("mp2t")||-1!==type.indexOf("mpeg-ts")||/\.ts(\?|$)/.test(target)?"video/mp2t":"video/mp2t"
+}
 function forward(e,t,r,n) {
   activeToken!==n&&(killActiveStreams(),activeToken=n);
   var o= {
@@ -3087,18 +3132,22 @@ function forward(e,t,r,n) {
         }
         if(o.statusCode>=300&&o.statusCode<400&&o.headers.location&&(r._redirects||0)<4) {
           o.resume();
-          var target=urlmod.resolve(r.url||"",o.headers.location);
+          var target=urlmod.resolve(r.url||"",o.headers.location),redirectHeaders= {
+          }
+          ;
+          // El Host lo recalcula mediaRequest para el nuevo destino; no
+          // arrastrar el de la peticion original en una redireccion a otro CDN.
+          for(var hk in r.headers|| {
+          }
+          )Object.prototype.hasOwnProperty.call(r.headers,hk)&&"host"!==hk.toLowerCase()&&(redirectHeaders[hk]=r.headers[hk]);
           return forward(e,t, {
-            url:target,headers:r.headers|| {
-            }
-            ,duration:0,_redirects:(r._redirects||0)+1
+            url:target,headers:redirectHeaders,duration:0,_redirects:(r._redirects||0)+1
           }
           ,n)
         }
-        var s=(o.headers["content-type"]||"").toLowerCase(),a="video/mp2t";
-        -1!==s.indexOf("mp4")?a="video/mp4":(-1!==s.indexOf("mpegurl")||r.url&&-1!==r.url.indexOf(".m3u8"))&&(a="application/vnd.apple.mpegurl");
+        var a=contentTypeFor(r.url,o.headers["content-type"]);
         var i="application/vnd.apple.mpegurl"===a,l= {
-          "Content-Type":a,"Accept-Ranges":o.headers["accept-ranges"]||"bytes","Access-Control-Allow-Origin":"*","Cache-Control":i?"no-cache, no-store":"private, max-age=120",Connection:"keep-alive"
+          "Content-Type":a,"Accept-Ranges":o.headers["accept-ranges"]||"bytes","Access-Control-Allow-Origin":"*","Access-Control-Expose-Headers":"Content-Length, Content-Range, Accept-Ranges","Cache-Control":i?"no-cache, no-store":"private, max-age=120",Connection:"keep-alive"
         }
         ;
         if(o.headers["content-length"]&&(l["Content-Length"]=o.headers["content-length"]),o.headers["content-range"]&&(l["Content-Range"]=o.headers["content-range"]),"HEAD"===e.method)return t.writeHead(o.statusCode||200,l),t.end(),void o.resume();
@@ -3282,102 +3331,219 @@ module.exports= {
 
   __define("service/ts-indexer.js", function (module, exports, require, __dirname) {
 "use strict";
-var PACKET=188;
-function ptsAt(t,r) {
-  return 536870912*(14&t[r])+4194304*t[r+1]+16384*(254&t[r+2])+128*t[r+3]+(254&t[r+4])/2
+
+/*
+ * Indexador de MPEG-TS para el VOD virtual.
+ *
+ * Recorre el archivo por rangos de 2 MB, localiza la PMT, detecta el PID de
+ * video y corta en keyframes. Soporta H.264 (stream_type 27 / 0x1B), HEVC
+ * (36 / 0x24) y MPEG-2 Video (2).
+ *
+ * create(length, readRange, durationHintSec)
+ *   readRange(start, end, callback(err, buffer))
+ */
+
+var PACKET = 188;
+
+function ptsAt(buf, off) {
+  return (
+    536870912 * (14 & buf[off]) +
+    4194304 * buf[off + 1] +
+    16384 * (254 & buf[off + 2]) +
+    128 * buf[off + 3] +
+    (254 & buf[off + 4]) / 2
+  );
 }
-function create(t,r) {
-  var n= {
-    length:t,offset:0,pmt:-1,video:-1,pat:0,pts:0,current:null,segments:[],complete:!1,running:!1,waiters:[]
+
+function create(totalLength, readRange, durationHintSec) {
+  var state = {
+    length: totalLength,
+    durationHint: Number(durationHintSec) || 0,
+    offset: 0,
+    pmt: -1,
+    video: -1,
+    codecType: 0, // 27 = H.264, 36 = HEVC, 2 = MPEG-2
+    pat: 0,
+    pts: 0,
+    current: null,
+    segments: [],
+    complete: false,
+    running: false,
+    waiters: []
+  };
+
+  function notify() {
+    var list = state.waiters.splice(0);
+    for (var i = 0; i < list.length; i++) list[i]();
   }
-  ;
-  function e() {
-    for(var t=n.waiters.splice(0),r=0;
-    r<t.length;
-    r++)t[r]()
+
+  function payloadOffset(buf, pos) {
+    var afc = (buf[pos + 3] >> 4) & 3;
+    var p = pos + 4;
+    if (afc === 0 || afc === 2) return -1;
+    if (afc === 3) p += 1 + buf[p];
+    return p < pos + PACKET ? p : -1;
   }
-  function u(t,r) {
-    var n=t[r+3]>>4&3,e=r+4;
-    return 2===n||0===n?-1:(3===n&&(e+=1+t[e]),e<r+PACKET?e:-1)
+
+  function sectionOffset(buf, pos, pusi) {
+    return pusi ? pos + 1 + buf[pos] : pos;
   }
-  function i(t,r,n) {
-    return n?r+1+t[r]:r
-  }
-  function s(t,r,e) {
-    if(!((r=i(t,r,e))<0||0!==t[r]))for(var u=r+3+((15&t[r+1])<<8|t[r+2])-4,s=r+8;
-    s+3<u;
-    s+=4)if(t[s]||t[s+1])return void(n.pmt=(31&t[s+2])<<8|t[s+3])
-  }
-  function o(t,r,e) {
-    if(!((r=i(t,r,e))<0||2!==t[r]))for(var u=r+3+((15&t[r+1])<<8|t[r+2])-4,s=r+12+((15&t[r+10])<<8|t[r+11]);
-    s+4<u;
-    ) {
-      var o=t[s],f=(31&t[s+1])<<8|t[s+2],a=(15&t[s+3])<<8|t[s+4];
-      if(36===o)return void(n.video=f);
-      s+=5+a
-    }
-  }
-  function f(t,r,n) {
-    for(var e=r;
-    e+5<n;
-    e++) {
-      if(0===t[e]&&0===t[e+1]&&(1===t[e+2]||0===t[e+2]&&1===t[e+3])) {
-        var u=t[e+(1===t[e+2]?3:4)]>>1&63;
-        if(19===u||20===u||21===u)return!0
+
+  function parsePat(buf, pos, pusi) {
+    pos = sectionOffset(buf, pos, pusi);
+    if (pos < 0 || buf[pos] !== 0) return;
+    var end = pos + 3 + (((buf[pos + 1] & 15) << 8) | buf[pos + 2]) - 4;
+    for (var s = pos + 8; s + 3 < end; s += 4) {
+      if ((buf[s] << 8) | buf[s + 1]) {
+        state.pmt = ((buf[s + 2] & 31) << 8) | buf[s + 3];
+        return;
       }
     }
-    return!1
   }
-  function a(t) {
-    if(n.pts) {
-      var r=n.pat||t;
-      if(n.current) {
-        var u=(n.pts-n.current.pts)/9e4;
-        u<5||r<=n.current.start||(n.segments.push( {
-          start:n.current.start,end:r-1,duration:u
+
+  function parsePmt(buf, pos, pusi) {
+    pos = sectionOffset(buf, pos, pusi);
+    if (pos < 0 || buf[pos] !== 2) return;
+    var end = pos + 3 + (((buf[pos + 1] & 15) << 8) | buf[pos + 2]) - 4;
+    var progInfoLen = ((buf[pos + 10] & 15) << 8) | buf[pos + 11];
+    for (var s = pos + 12 + progInfoLen; s + 4 < end; ) {
+      var streamType = buf[s];
+      var pid = ((buf[s + 1] & 31) << 8) | buf[s + 2];
+      var esInfoLen = ((buf[s + 3] & 15) << 8) | buf[s + 4];
+      if (streamType === 27 || streamType === 36 || streamType === 2) {
+        state.video = pid;
+        state.codecType = streamType;
+        return;
+      }
+      s += 5 + esInfoLen;
+    }
+  }
+
+  function isKeyframe(buf, start, end) {
+    for (var i = start; i + 5 < end; i++) {
+      if (buf[i] !== 0 || buf[i + 1] !== 0) continue;
+      var startCode = buf[i + 2] === 1 ? 3 : buf[i + 2] === 0 && buf[i + 3] === 1 ? 4 : 0;
+      if (!startCode) continue;
+      var nalPos = i + startCode;
+
+      if (state.codecType === 36) {
+        // HEVC: IDR_W_RADL (19), IDR_N_LP (20), CRA_NUT (21).
+        var hevcType = (buf[nalPos] >> 1) & 63;
+        if (hevcType === 19 || hevcType === 20 || hevcType === 21) return true;
+      } else if (state.codecType === 27) {
+        // H.264: IDR (5) o SPS (7).
+        var h264Type = buf[nalPos] & 31;
+        if (h264Type === 5 || h264Type === 7) return true;
+      } else if (state.codecType === 2) {
+        // MPEG-2: picture_start_code (00 00 01 00) con picture_coding_type 1.
+        if (buf[nalPos] === 0 && nalPos + 2 < end && ((buf[nalPos + 2] >> 3) & 7) === 1) {
+          return true;
         }
-        ),n.current= {
-          start:r,pts:n.pts
+      }
+    }
+    return false;
+  }
+
+  function onKeyframe(bytePos) {
+    if (!state.pts) return;
+    var segStart = state.pat || bytePos;
+    if (state.current) {
+      var duration = (state.pts - state.current.pts) / 90000;
+      if (duration < 5 || segStart <= state.current.start) return;
+      state.segments.push({
+        start: state.current.start,
+        end: segStart - 1,
+        duration: duration
+      });
+      state.current = { start: segStart, pts: state.pts };
+      notify();
+    } else {
+      state.current = { start: segStart, pts: state.pts };
+    }
+  }
+
+  function step() {
+    if (state.offset >= state.length) {
+      state.complete = true;
+      if (state.current && state.current.start < state.length - 1) {
+        state.segments.push({
+          start: state.current.start,
+          end: state.length - 1,
+          duration: 10
+        });
+      }
+      return notify();
+    }
+
+    var chunkBytes = Math.floor(2097152 / PACKET) * PACKET;
+    var start = state.offset;
+    var end = Math.min(state.length - 1, start + chunkBytes - 1);
+
+    readRange(start, end, function (err, buf) {
+      if (err || !buf || !buf.length) {
+        state.complete = true;
+        return notify();
+      }
+
+      // Alinear al sincronismo de paquete TS (0x47 = 71).
+      var syncOffset = 0;
+      for (var k = 0; k < PACKET && k + PACKET < buf.length; k++) {
+        if (buf[k] === 71 && buf[k + PACKET] === 71) {
+          syncOffset = k;
+          break;
         }
-        ,e())
       }
-      else n.current= {
-        start:r,pts:n.pts
-      }
-    }
-  }
-  function c() {
-    if(n.offset>=n.length)return n.complete=!0,n.current&&n.segments.push( {
-      start:n.current.start,end:n.length-1,duration:10
-    }
-    ),void e();
-    var t=Math.floor(2097152/PACKET)*PACKET,i=n.offset,p=Math.min(n.length-1,i+t-1);
-    r(i,p,function(t,r) {
-      if(t)return n.complete=!0,void e();
-      !function(t,r) {
-        for(var e=0;
-        e+PACKET<=t.length;
-        e+=PACKET)if(71===t[e]) {
-          var i=!!(64&t[e+1]),c=(31&t[e+1])<<8|t[e+2],p=u(t,e);
-          p<0||(0!==c?c!==n.pmt?c===n.video&&(i&&p+13<e+PACKET&&0===t[p]&&0===t[p+1]&&1===t[p+2]&&128&t[p+7]&&(n.pts=ptsAt(t,p+9)),f(t,p,e+PACKET)&&a(r+e)):o(t,p,i):(n.pat=r+e,s(t,p,i)))
+
+      for (var pos = syncOffset; pos + PACKET <= buf.length; pos += PACKET) {
+        if (buf[pos] !== 71) continue;
+        var pusi = !!(buf[pos + 1] & 64);
+        var pid = ((buf[pos + 1] & 31) << 8) | buf[pos + 2];
+        var payload = payloadOffset(buf, pos);
+        if (payload < 0) continue;
+
+        if (pid === 0) {
+          state.pat = start + pos;
+          parsePat(buf, payload, pusi);
+        } else if (pid === state.pmt) {
+          parsePmt(buf, payload, pusi);
+        } else if (pid === state.video) {
+          if (
+            pusi &&
+            payload + 13 < pos + PACKET &&
+            buf[payload] === 0 &&
+            buf[payload + 1] === 0 &&
+            buf[payload + 2] === 1 &&
+            buf[payload + 7] & 128
+          ) {
+            state.pts = ptsAt(buf, payload + 9);
+          }
+          if (isKeyframe(buf, payload, pos + PACKET)) {
+            onKeyframe(start + pos);
+          }
         }
       }
-      (r,i),n.offset=p+1,setTimeout(c,0)
+
+      state.offset = end + 1;
+      setTimeout(step, 0);
+    });
+  }
+
+  state.start = function () {
+    if (!state.running) {
+      state.running = true;
+      step();
     }
-    )
-  }
-  return n.start=function() {
-    n.running||(n.running=!0,c())
-  }
-  ,n.when=function(t) {
-    n.waiters.push(t)
-  }
-  ,n
+  };
+
+  state.when = function (callback) {
+    if (state.complete) return callback();
+    state.waiters.push(callback);
+  };
+
+  return state;
 }
-module.exports= {
-  create:create
-}
-;
+
+module.exports = { create: create };
 
 });
 

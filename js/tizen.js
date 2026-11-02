@@ -45,6 +45,9 @@
   }
 
   function storedUrl() {
+    // Dentro de TizenBrew el relay vive en la propia TV. Una IP de PC
+    // guardada de una sesion anterior no debe pisar el loopback.
+    if (embeddedRelay) return "http://127.0.0.1:8910";
     try {
       return normalizeUrl(localStorage.getItem(STORAGE_KEY) || "");
     } catch (e) {
@@ -57,7 +60,7 @@
   }
 
   function persistUrl(value) {
-    var url = normalizeUrl(value);
+    var url = embeddedRelay ? "http://127.0.0.1:8910" : normalizeUrl(value);
     if (!url) return "";
     API.devServiceUrl = url;
     try {
@@ -67,7 +70,9 @@
   }
 
   // URL guardada (o default) antes de que arranque app.js
-  API.devServiceUrl = storedUrl() || normalizeUrl(DEFAULT_URL);
+  API.devServiceUrl = embeddedRelay
+    ? "http://127.0.0.1:8910"
+    : storedUrl() || normalizeUrl(DEFAULT_URL);
 
   /* ---------------------------------------------------------------- */
   /* Ping al relay                                                     */
@@ -95,6 +100,7 @@
           data = JSON.parse(xhr.responseText);
         } catch (e) {}
         var ok = xhr.status >= 200 && xhr.status < 300 && data && data.returnValue !== false;
+        if (ok) window.__XUPER_RELAY_INFO = data;
         finish(ok, data, ok ? "" : "HTTP " + xhr.status);
       };
       xhr.onerror = function () {
@@ -715,6 +721,68 @@
     start();
   }
 
+  /* ---------------------------------------------------------------- */
+  /* Puente de arranque para el reproductor                            */
+  /* ---------------------------------------------------------------- */
+
+  function checkHealth(timeoutMs) {
+    return new Promise(function (resolve) {
+      var target = currentUrl();
+      if (!target) return resolve(false);
+      try {
+        var xhr = new XMLHttpRequest();
+        xhr.open("GET", target + "/health?_t=" + Date.now(), true);
+        xhr.timeout = timeoutMs || 1200;
+        xhr.onload = function () {
+          var data = null;
+          try {
+            data = JSON.parse(xhr.responseText);
+          } catch (e) {}
+          resolve(xhr.status >= 200 && xhr.status < 300 && !!data && data.ok !== false);
+        };
+        xhr.onerror = xhr.ontimeout = function () {
+          resolve(false);
+        };
+        xhr.send();
+      } catch (e) {
+        resolve(false);
+      }
+    });
+  }
+
+  var relayReadyPromise = null;
+
+  // Devuelve una promesa que solo se resuelve cuando /health responde.
+  // Si el servicio embebido murio, pide a TizenBrew que lo arranque otra vez.
+  function ensureRelayReady(maxWaitMs) {
+    if (relayReadyPromise) return relayReadyPromise;
+    var limit = Number(maxWaitMs) > 0 ? Number(maxWaitMs) : 10000;
+    relayReadyPromise = (async function () {
+      if (await checkHealth(800)) return true;
+      if (!embeddedRelay) return false;
+
+      await new Promise(function (resolve) {
+        ensureEmbeddedService(function () {
+          resolve();
+        });
+      });
+
+      var startedAt = Date.now();
+      while (Date.now() - startedAt < limit) {
+        await new Promise(function (resolve) {
+          setTimeout(resolve, 450);
+        });
+        if (await checkHealth(1000)) {
+          relayReadyPromise = null;
+          return true;
+        }
+      }
+      relayReadyPromise = null;
+      return false;
+    })();
+    return relayReadyPromise;
+  }
+
   // API minima para depurar desde la consola o desde la app.
   window.__XUPER_RELAY__ = {
     show: showOverlay,
@@ -722,5 +790,11 @@
     ping: ping,
     url: currentUrl,
     save: persistUrl
+  };
+
+  // Puente que usa app.js cuando necesita confirmar el relay antes de reproducir.
+  window.XuperTizenBridge = {
+    ensureRelayReady: ensureRelayReady,
+    checkHealth: checkHealth
   };
 })();
