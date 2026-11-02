@@ -1,6 +1,6 @@
 {
   "name": "xupertv",
-  "version": "2.2.0",
+  "version": "2.2.2",
   "description": "XuperTV client application for Samsung Tizen via TizenBrew",
   "packageType": "app",
   "appName": "XuperTV",

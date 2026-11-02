@@ -653,7 +653,7 @@ server.listen(apiPort, bindHost, function () {
   __define("package.json", function (module, exports, require, __dirname) {
 module.exports = {
   "name": "xupetv-relay",
-  "version": "2.2.0",
+  "version": "2.2.2",
   "description": "Relay LAN de XuperTV (catalogo Magis + proxy de streams) para la app Tizen",
   "private": true,
   "main": "server.js",
@@ -1430,14 +1430,40 @@ function bufAlloc(e) {
   var t=new Buffer(e);
   return t.fill(0),t
 }
-var EMPTY_IV=bufFrom("","binary");
+// El portal usa 3DES en modo ECB con relleno PKCS#7. Tizen/OpenSSL no
+// expone "des-ede3-ecb", solo CBC, asi que ciframos cada bloque de 8 bytes
+// por separado con IV cero: el resultado es identico a ECB.
+var EMPTY_IV=bufAlloc(8);
+function tripleDesEcb(data,decrypt) {
+  var i,out=[],block,dc;
+  if(!decrypt) {
+    var pad=8-(data.length%8);
+    var padded=bufAlloc(data.length+pad);
+    data.copy(padded,0);
+    for(i=data.length;i<padded.length;i++)padded[i]=pad;
+    data=padded;
+  }
+  else if(data.length%8)throw new Error("bloque 3DES invalido");
+  for(i=0;i<data.length;i+=8) {
+    dc=decrypt?crypto.createDecipheriv("des-ede3-cbc",bufFrom(KEY_HEX,"hex"),EMPTY_IV):crypto.createCipheriv("des-ede3-cbc",bufFrom(KEY_HEX,"hex"),EMPTY_IV);
+    dc.setAutoPadding(!1);
+    out.push(Buffer.concat([dc.update(data.slice(i,i+8)),dc.final()]));
+  }
+  var result=Buffer.concat(out);
+  if(decrypt) {
+    var n=result[result.length-1];
+    if(n<1||n>8||n>result.length)throw new Error("relleno 3DES invalido");
+    result=result.slice(0,result.length-n);
+  }
+  return result;
+}
 function encryptBody(e) {
-  var t=crypto.createCipheriv("des-ede3",bufFrom(KEY_HEX,"hex"),EMPTY_IV),r=Buffer.concat([t.update(bufFrom(e,"utf8")),t.final()]);
+  var r=tripleDesEcb(bufFrom(e,"utf8"),!1);
   return bufFrom(r.toString("base64"),"ascii").toString("hex")
 }
 function decryptBlob(e) {
-  var t=bufFrom(e,"hex").toString("ascii"),r=crypto.createDecipheriv("des-ede3",bufFrom(KEY_HEX,"hex"),EMPTY_IV);
-  return Buffer.concat([r.update(bufFrom(t,"base64")),r.final()]).toString("utf8")
+  var t=bufFrom(e,"hex").toString("ascii");
+  return tripleDesEcb(bufFrom(t,"base64"),!0).toString("utf8")
 }
 function randomHex(e) {
   return crypto.randomBytes(e).toString("hex")
@@ -1606,7 +1632,10 @@ function ensureSession(e) {
   ;
   for(t in FINGERPRINT_FIXED)Object.prototype.hasOwnProperty.call(FINGERPRINT_FIXED,t)&&(r[t]=FINGERPRINT_FIXED[t]);
   function n(t) {
-    if(console.log("[magis] snToken/active falló: "+(t&&t.message)+". Reintentando con otro host..."),!t||!t._retried)return HOSTS.push(HOSTS.shift()),(t||new Error("reintento"))._retried=!0,setTimeout(function() {
+    console.log("[magis] snToken/active falló: "+(t&&t.message)+". Reintentando con otro host...");
+    // Limite duro: un cifrador no disponible no debe dejar la cola colgada.
+    if((n._fails=(n._fails||0)+1)>3)return e(t||new Error("no se pudo iniciar sesion"));
+    if(!t||!t._retried)return HOSTS.push(HOSTS.shift()),(t||new Error("reintento"))._retried=!0,setTimeout(function() {
       ensureSession(e)
     }
     ,500);
