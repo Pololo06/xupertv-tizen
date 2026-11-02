@@ -19,6 +19,15 @@
   var API = window.XUPERTV_API || (window.XUPERTV_API = {});
   var DEFAULT_URL = API.devServiceUrl || "http://192.168.1.19:8910";
 
+  // Asegurar Modo fluido (H.264 compatible) en Tizen y navegador
+  try {
+    var globalPlayback = JSON.parse(localStorage.getItem("xuper_global_playback_v1") || "{}");
+    if (!globalPlayback.streamMode || globalPlayback.streamMode === "normal") {
+      globalPlayback.streamMode = "smooth";
+      localStorage.setItem("xuper_global_playback_v1", JSON.stringify(globalPlayback));
+    }
+  } catch (e) {}
+
   /* ---------------------------------------------------------------- */
   /* URL del relay                                                     */
   /* ---------------------------------------------------------------- */
