@@ -3975,7 +3975,7 @@
       if(useHls) {
         try {
           var hlsErrors=0,h=new Hls( {
-            enableWorker:!1,lowLatencyMode:!1,backBufferLength:15,maxBufferLength:20,maxMaxBufferLength:30,maxBufferHole:.5,liveSyncDurationCount:3,liveMaxLatencyDurationCount:8,manifestLoadingTimeOut:1e4,manifestLoadingMaxRetry:2,levelLoadingTimeOut:1e4,fragLoadingTimeOut:15e3,fragLoadingMaxRetry:3
+            enableWorker:!1,lowLatencyMode:!1,backBufferLength:15,maxBufferLength:20,maxMaxBufferLength:30,maxBufferHole:.5,liveSyncDurationCount:3,liveMaxLatencyDurationCount:"vod"===$.playerMode?1e9:8,startPosition:"vod"===$.playerMode?0:-1,manifestLoadingTimeOut:1e4,manifestLoadingMaxRetry:2,levelLoadingTimeOut:1e4,fragLoadingTimeOut:15e3,fragLoadingMaxRetry:3
           }
           );
           hlsPlayer=h,h.on(Hls.Events.MEDIA_ATTACHED,function() {
