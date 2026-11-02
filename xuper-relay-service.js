@@ -666,10 +666,16 @@ server.on("error", function (err) {
   console.error("[relay] error del servidor API:", err.message);
   if (err.code === "EADDRINUSE") {
     // Otra instancia (normalmente la de la sesion anterior de TizenBrew)
-    // ya sirve el relay. Esta instancia no puede escuchar: salir sin
-    // dejar un proceso huerfano ni tumbar a la instancia viva.
-    console.error("[relay] el puerto " + apiPort + " ya esta en uso; hay otra instancia activa. Saliendo.");
-    process.exit(0);
+    // ya sirve el relay. En la TV NO se puede llamar a process.exit():
+    // este script corre dentro del mismo proceso Node que el proxy de
+    // archivos de TizenBrew (vm.runInContext), y terminarlo deja la app
+    // con el index.html cargado pero sin js/app.js (pantalla negra).
+    console.error("[relay] el puerto " + apiPort + " ya esta en uso; se reutiliza la instancia activa.");
+    if (isTizenEmbedded) {
+      console.error("[relay] modo embebido: se mantiene vivo el proceso de TizenBrew.");
+      return;
+    }
+    process.exit(1);
   }
   if (process.env.XUPER_EMBEDDED !== "1") process.exit(1);
 });
@@ -694,7 +700,7 @@ server.listen(apiPort, bindHost, function () {
   __define("package.json", function (module, exports, require, __dirname) {
 module.exports = {
   "name": "xupetv-relay",
-  "version": "2.2.3",
+  "version": "2.2.4",
   "description": "Relay LAN de XuperTV (catalogo Magis + proxy de streams) para la app Tizen",
   "private": true,
   "main": "server.js",
