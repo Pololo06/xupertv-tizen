@@ -19,11 +19,11 @@
   var API = window.XUPERTV_API || (window.XUPERTV_API = {});
   var DEFAULT_URL = API.devServiceUrl || "http://192.168.1.19:8910";
 
-  // Asegurar Modo fluido (H.264 compatible) en Tizen y navegador
+  // Modo de reproducción inicial si el usuario aún no tiene uno guardado
   try {
     var globalPlayback = JSON.parse(localStorage.getItem("xuper_global_playback_v1") || "{}");
-    if (!globalPlayback.streamMode || globalPlayback.streamMode === "normal") {
-      globalPlayback.streamMode = "smooth";
+    if (!globalPlayback.streamMode) {
+      globalPlayback.streamMode = "normal";
       localStorage.setItem("xuper_global_playback_v1", JSON.stringify(globalPlayback));
     }
   } catch (e) {}
