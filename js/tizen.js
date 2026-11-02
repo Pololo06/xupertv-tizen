@@ -114,9 +114,9 @@
       errorOverlay.innerHTML =
         '<div style="max-width:1700px;margin:0 auto">' +
         '<div style="font-size:40px;font-weight:bold;color:#ff5a5a;margin-bottom:8px">XuperTV: error en pantalla</div>' +
-        '<div style="font-size:24px;color:#bbb;margin-bottom:28px">Haz una foto a esta pantalla y enviala. No hace falta sdb.</div>' +
+        '<div style="font-size:24px;color:#bbb;margin-bottom:22px">Haz una foto a esta pantalla y enviala. No hace falta sdb.</div>' +
+        '<div id="xuper-error-env" style="margin-bottom:24px;padding-bottom:18px;border-bottom:1px solid #444;font-size:20px;color:#aaa;white-space:pre-wrap;word-break:break-word"></div>' +
         '<div id="xuper-error-list"></div>' +
-        '<div id="xuper-error-env" style="margin-top:28px;padding-top:18px;border-top:1px solid #444;font-size:20px;color:#aaa;white-space:pre-wrap"></div>' +
         "</div>";
       (document.body || document.documentElement).appendChild(errorOverlay);
       errorOverlayList = document.getElementById("xuper-error-list");
@@ -128,7 +128,7 @@
     try {
       ensureErrorOverlay();
       if (!errorOverlay || !errorOverlayList) return;
-      if (errorOverlayCount < 6) {
+      if (errorOverlayCount < 4) {
         errorOverlayCount++;
         var item = document.createElement("div");
         item.style.cssText =
