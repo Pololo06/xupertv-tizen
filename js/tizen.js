@@ -17,10 +17,14 @@
 
   var STORAGE_KEY = "xuper.relayUrl";
   var API = window.XUPERTV_API || (window.XUPERTV_API = {});
-  // En TizenBrew el relay va dentro del servicio Node de la propia TV.
-  var embeddedRelay = location.port === "8081" && location.pathname.indexOf("/module/") === 0;
+  // Standalone: el relay corre en un servicio Tizen del mismo WGT.
+  // TizenBrew: el relay corre en el servicio Node de TizenBrew.
+  var standaloneRelay = !!window.__XUPER_STANDALONE__;
+  var embeddedRelay =
+    standaloneRelay || (location.port === "8081" && location.pathname.indexOf("/module/") === 0);
+  var RELAY_LOCAL_URL = standaloneRelay ? "http://127.0.0.1:8915" : "http://127.0.0.1:8910";
   var DEFAULT_URL = embeddedRelay
-    ? "http://127.0.0.1:8910"
+    ? RELAY_LOCAL_URL
     : API.devServiceUrl || "http://192.168.1.19:8910";
 
   // Modo de reproducción inicial si el usuario aún no tiene uno guardado
@@ -45,9 +49,9 @@
   }
 
   function storedUrl() {
-    // Dentro de TizenBrew el relay vive en la propia TV. Una IP de PC
-    // guardada de una sesion anterior no debe pisar el loopback.
-    if (embeddedRelay) return "http://127.0.0.1:8910";
+    // Dentro de TizenBrew/standalone el relay vive en la propia TV. Una IP
+    // de PC guardada de una sesion anterior no debe pisar el loopback.
+    if (embeddedRelay) return RELAY_LOCAL_URL;
     try {
       return normalizeUrl(localStorage.getItem(STORAGE_KEY) || "");
     } catch (e) {
@@ -60,7 +64,7 @@
   }
 
   function persistUrl(value) {
-    var url = embeddedRelay ? "http://127.0.0.1:8910" : normalizeUrl(value);
+    var url = embeddedRelay ? RELAY_LOCAL_URL : normalizeUrl(value);
     if (!url) return "";
     API.devServiceUrl = url;
     try {
@@ -71,7 +75,7 @@
 
   // URL guardada (o default) antes de que arranque app.js
   API.devServiceUrl = embeddedRelay
-    ? "http://127.0.0.1:8910"
+    ? RELAY_LOCAL_URL
     : storedUrl() || normalizeUrl(DEFAULT_URL);
 
   /* ---------------------------------------------------------------- */
@@ -265,6 +269,8 @@
   // mientras se muestra un aviso de inicio, no un error definitivo.
   function waitForRelay(url, tries, callback) {
     var warning = setTimeout(function () {
+      // Standalone: no tapar el arranque con el formulario de servidor LAN.
+      if (standaloneRelay) return;
       showOverlay(embeddedRelay ? "Iniciando relay interno…" : "Conectando con " + url);
     }, embeddedRelay ? 3000 : 1200);
     (function attempt(left) {
@@ -292,9 +298,46 @@
     return value.indexOf("xupertv") !== -1;
   }
 
+  // Standalone: lanzar el servicio Tizen del mismo WGT. Es idempotente:
+  // si ya esta corriendo, Tizen puede devolver error, pero el ping decide.
+  function launchStandaloneService(callback) {
+    var done = false,
+      timer = null;
+    function finish(ok, error) {
+      if (done) return;
+      done = true;
+      if (timer) clearTimeout(timer);
+      callback(ok, error || "");
+    }
+    if (!standaloneRelay || !isTizen || !window.tizen || !tizen.application) {
+      return finish(false, "Tizen no disponible");
+    }
+    timer = setTimeout(function () {
+      finish(false, "Tizen no respondio al lanzar el servicio");
+    }, 8000);
+    try {
+      var app = tizen.application.getCurrentApplication(),
+        packageId = app && app.appInfo && app.appInfo.packageId;
+      if (!packageId) return finish(false, "packageId no disponible");
+      tizen.application.launchAppControl(
+        new tizen.ApplicationControl("http://tizen.org/appcontrol/operation/service"),
+        packageId + ".XuperRelayService",
+        function () {
+          finish(true);
+        },
+        function (e) {
+          finish(false, (e && e.message) || "No se pudo iniciar el servicio");
+        }
+      );
+    } catch (e) {
+      finish(false, e.message || "Error al iniciar el servicio");
+    }
+  }
+
   // Si TizenBrew no arranco el servicio, pedirle que lo inicie por su
   // WebSocket interno (mismo puerto que sirve esta pagina).
   function ensureEmbeddedService(callback) {
+    if (standaloneRelay) return launchStandaloneService(callback);
     if (!embeddedRelay || typeof WebSocket === "undefined") return callback(false, "");
     var ws, done = false, timer;
     function finish(ok, error) {
@@ -681,6 +724,15 @@
   }
 
   function exitApp() {
+    // En standalone no hay TizenBrew detras: salir de la app Tizen.
+    if (standaloneRelay) {
+      try {
+        if (isTizen && tizen.application) {
+          tizen.application.getCurrentApplication().exit();
+          return;
+        }
+      } catch (e) {}
+    }
     try {
       if (typeof history !== "undefined" && history.length > 1) {
         history.back();
@@ -841,13 +893,34 @@
 
     setTimeout(function () {
       var url = currentUrl();
+
+      if (standaloneRelay) {
+        // El servicio Tizen puede tardar en arrancar. Lanzarlo y esperar
+        // sin recargar la pagina: app.js ya tiene el catalogo empaquetado.
+        launchStandaloneService(function () {
+          waitForRelay(url, 50, function (ok, error) {
+            if (ok) {
+              API.devServiceUrl = url;
+              hideOverlay();
+              return;
+            }
+            showErrorOverlay(
+              "relay interno",
+              "No se pudo iniciar el relay interno" + (error ? " (" + error + ")" : ""),
+              "service/index.js",
+              0,
+              0,
+              "El catalogo empaquetado sigue visible; live/VOD necesitan el servicio."
+            );
+          });
+        });
+        return;
+      }
+
       waitForRelay(url, embeddedRelay ? 30 : 4, function (ok, error) {
         if (ok) {
           API.devServiceUrl = url;
-          // Si el aviso llego a mostrarse, recargar para que la app vuelva a
-          // pedir el catalogo con el relay ya disponible.
-          if (overlayVisible) window.location.reload();
-          else hideOverlay();
+          hideOverlay();
           return;
         }
         if (!embeddedRelay) {
@@ -863,7 +936,7 @@
           waitForRelay(url, 20, function (ok2, error2) {
             if (ok2) {
               API.devServiceUrl = url;
-              window.location.reload();
+              hideOverlay();
             } else {
               showOverlay("Relay interno sin respuesta" + (error2 ? " (" + error2 + ")" : ""));
             }
@@ -915,29 +988,31 @@
   function ensureRelayReady(maxWaitMs) {
     if (relayReadyPromise) return relayReadyPromise;
     var limit = Number(maxWaitMs) > 0 ? Number(maxWaitMs) : 10000;
-    relayReadyPromise = (async function () {
-      if (await checkHealth(800)) return true;
-      if (!embeddedRelay) return false;
-
-      await new Promise(function (resolve) {
+    relayReadyPromise = new Promise(function (resolve) {
+      var finished = false;
+      function finish(ok) {
+        if (finished) return;
+        finished = true;
+        relayReadyPromise = null;
+        resolve(ok);
+      }
+      checkHealth(800).then(function (ok) {
+        if (ok) return finish(true);
+        if (!embeddedRelay) return finish(false);
         ensureEmbeddedService(function () {
-          resolve();
+          var startedAt = Date.now();
+          (function poll() {
+            if (Date.now() - startedAt >= limit) return finish(false);
+            setTimeout(function () {
+              checkHealth(1000).then(function (ok2) {
+                if (ok2) finish(true);
+                else poll();
+              });
+            }, 450);
+          })();
         });
       });
-
-      var startedAt = Date.now();
-      while (Date.now() - startedAt < limit) {
-        await new Promise(function (resolve) {
-          setTimeout(resolve, 450);
-        });
-        if (await checkHealth(1000)) {
-          relayReadyPromise = null;
-          return true;
-        }
-      }
-      relayReadyPromise = null;
-      return false;
-    })();
+    });
     return relayReadyPromise;
   }
 
