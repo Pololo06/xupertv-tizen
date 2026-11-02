@@ -256,7 +256,7 @@ function resolveStream(res, p, force) {
 
   if (!contentId) return fail(res, new Error("contentId requerido"));
 
-  magis.resolve(contentId, seriesContentId, { trackIndex: p.trackIndex }, function (err, stream) {
+  magis.resolve(contentId, seriesContentId, { trackIndex: p.trackIndex, qualityMode: p.qualityMode }, function (err, stream) {
     if (err) return fail(res, err);
 
     var hevc = /hevc|h\.?265/i.test(stream.codec || "") || /hevc|h\.?265/i.test(stream.mime || ""),
@@ -700,7 +700,7 @@ server.listen(apiPort, bindHost, function () {
   __define("package.json", function (module, exports, require, __dirname) {
 module.exports = {
   "name": "xupetv-relay",
-  "version": "2.2.6",
+  "version": "2.2.7",
   "description": "Relay LAN de XuperTV (catalogo Magis + proxy de streams) para la app Tizen",
   "private": true,
   "main": "server.js",
@@ -1964,6 +1964,17 @@ function trackSummary(e) {
     codec:trim(e&&e.encodeFormat).toUpperCase(),format:trim(e&&e.videoFormat).toLowerCase(),quality:trim(e&&e.quality),height:trackHeight(e),bitrateKbps:trackBitrateKbps(e),frameRate:trackFrameRate(e)
   }
 }
+function pickBestTrack(e) {
+  for(var t=0,r=-1,n=0;n<e.length;n++) {
+    var a=trackSummary(e[n]),
+      i=String(a.codec||"").toUpperCase(),
+      o=/HEVC|H265|H\.265/.test(i)?2:/H264|AVC/.test(i)?1:0,
+      s=(a.height||0)*1e9+(a.bitrateKbps||0)*1e6+1e4*o+100*(a.frameRate||0)+("mp4"===a.format?50:0);
+    /AV1|VP9/.test(i)&&(s-=5e12);
+    s>r&&(r=s,t=n)
+  }
+  return t
+}
 function durationSeconds(e) {
   var t=trim(e);
   if(!t)return 0;
@@ -2050,7 +2061,8 @@ function resolve(e,t,r,n) {
   ,loadPlay(e,t,function(e,t) {
     if(e)return n(e);
     var a=t.play,i=t.episode,o=t.tracks,s=parseInt(r.trackIndex,10);
-    s>=0&&s<o.length||(s=0);
+    if("max"===r.qualityMode)s=pickBestTrack(o);
+    else if(!(s>=0&&s<o.length))s=0;
     for(var u=o[s],l=[],c=0;
     c<o.length;
     c++)l.push(trackSummary(o[c]));

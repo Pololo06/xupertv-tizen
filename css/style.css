@@ -2855,7 +2855,8 @@ div, section, span { outline: none; }
   color: #ffffff;
 }
 
-#psv-btn-p1, #psv-btn-p2 {
+#psv-btn-p1, #psv-btn-p2,
+#psv-btn-q0, #psv-btn-q1 {
   width: auto;
   min-width: 290px;
   padding: 0 26px;
