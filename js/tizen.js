@@ -109,15 +109,27 @@
     }
   }
 
-  // El servicio TizenBrew arranca en paralelo a la pagina: reintentar unos
-  // segundos antes de mostrar el dialogo de servidor.
-  function pingRetry(url, tries, callback) {
-    ping(url, function (ok, data, error) {
-      if (ok || tries <= 0) return callback(ok, data, error);
-      setTimeout(function () {
-        pingRetry(url, tries - 1, callback);
-      }, 400);
-    });
+  // El servicio TizenBrew arranca en paralelo a la pagina. Se reintenta
+  // mientras se muestra un aviso de inicio, no un error definitivo.
+  function waitForRelay(url, tries, callback) {
+    var warning = setTimeout(function () {
+      showOverlay(embeddedRelay ? "Iniciando relay interno…" : "Conectando con " + url);
+    }, embeddedRelay ? 3000 : 1200);
+    (function attempt(left) {
+      ping(url, function (ok, data, error) {
+        if (ok) {
+          clearTimeout(warning);
+          return callback(true);
+        }
+        if (left <= 0) {
+          clearTimeout(warning);
+          return callback(false, error);
+        }
+        setTimeout(function () {
+          attempt(left - 1);
+        }, 400);
+      });
+    })(tries);
   }
 
   /* ---------------------------------------------------------------- */
@@ -602,12 +614,15 @@
 
     setTimeout(function () {
       var url = currentUrl();
-      pingRetry(url, embeddedRelay ? 8 : 2, function (ok, data) {
+      waitForRelay(url, embeddedRelay ? 30 : 4, function (ok, error) {
         if (ok) {
           API.devServiceUrl = url;
-          hideOverlay();
+          // Si el aviso llego a mostrarse, recargar para que la app vuelva a
+          // pedir el catalogo con el relay ya disponible.
+          if (overlayVisible) window.location.reload();
+          else hideOverlay();
         } else {
-          showOverlay("No se pudo conectar con " + url);
+          showOverlay("No se pudo conectar con " + url + (error ? " (" + error + ")" : ""));
         }
       });
     }, 250);

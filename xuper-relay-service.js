@@ -653,7 +653,7 @@ server.listen(apiPort, bindHost, function () {
   __define("package.json", function (module, exports, require, __dirname) {
 module.exports = {
   "name": "xupetv-relay",
-  "version": "2.1.8",
+  "version": "2.1.9",
   "description": "Relay LAN de XuperTV (catalogo Magis + proxy de streams) para la app Tizen",
   "private": true,
   "main": "server.js",
