@@ -132,6 +132,69 @@
     })(tries);
   }
 
+  // Si TizenBrew no arranco el servicio, pedirle que lo inicie por su
+  // WebSocket interno (mismo puerto que sirve esta pagina).
+  function ensureEmbeddedService(callback) {
+    if (!embeddedRelay || typeof WebSocket === "undefined") return callback(false, "");
+    var ws, done = false, timer;
+    function finish(ok, error) {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      try {
+        ws && ws.close();
+      } catch (e) {}
+      callback(ok, error || "");
+    }
+    try {
+      ws = new WebSocket("ws://127.0.0.1:8081");
+    } catch (e) {
+      return finish(false, e.message || "WebSocket no disponible");
+    }
+    timer = setTimeout(function () {
+      finish(false, "TizenBrew no respondio");
+    }, 6000);
+    ws.onerror = function () {
+      finish(false, "TizenBrew no respondio");
+    };
+    ws.onopen = function () {
+      ws.send(JSON.stringify({ type: 7 })); // GetServiceStatuses
+    };
+    ws.onmessage = function (event) {
+      var data;
+      try {
+        data = JSON.parse(event.data);
+      } catch (e) {
+        return;
+      }
+      if (data.type === 8) return finish(false, String(data.payload || "error de TizenBrew"));
+      if (data.type === 7) {
+        var list = data.payload || [],
+          status = null,
+          i;
+        for (i = 0; i < list.length; i++) {
+          if (list[i] && String(list[i].name).indexOf("xupertv-tizen") !== -1) status = list[i];
+        }
+        if (status && !status.hasCrashed) return finish(true);
+        ws.send(JSON.stringify({ type: 4, payload: true })); // GetModules
+        return;
+      }
+      if (data.type === 4) {
+        var modules = data.payload || [],
+          mod = null,
+          j;
+        for (j = 0; j < modules.length; j++) {
+          if (modules[j] && String(modules[j].fullName).indexOf("xupertv-tizen") !== -1) mod = modules[j];
+        }
+        if (!mod || !mod.serviceFile) return finish(false, "el modulo no declara relay");
+        ws.send(JSON.stringify({ type: 6, payload: mod })); // StartService
+        setTimeout(function () {
+          finish(true);
+        }, 2500);
+      }
+    };
+  }
+
   /* ---------------------------------------------------------------- */
   /* Overlay de configuracion                                          */
   /* ---------------------------------------------------------------- */
@@ -621,9 +684,27 @@
           // pedir el catalogo con el relay ya disponible.
           if (overlayVisible) window.location.reload();
           else hideOverlay();
-        } else {
-          showOverlay("No se pudo conectar con " + url + (error ? " (" + error + ")" : ""));
+          return;
         }
+        if (!embeddedRelay) {
+          showOverlay("No se pudo conectar con " + url + (error ? " (" + error + ")" : ""));
+          return;
+        }
+        showOverlay("Iniciando relay interno…");
+        ensureEmbeddedService(function (started, serviceError) {
+          if (!started) {
+            showOverlay("No se pudo iniciar el relay interno: " + serviceError);
+            return;
+          }
+          waitForRelay(url, 20, function (ok2, error2) {
+            if (ok2) {
+              API.devServiceUrl = url;
+              window.location.reload();
+            } else {
+              showOverlay("Relay interno sin respuesta" + (error2 ? " (" + error2 + ")" : ""));
+            }
+          });
+        });
       });
     }, 250);
   }
