@@ -1,0 +1,16 @@
+{
+  "name": "xupertv",
+  "version": "2.1.8",
+  "description": "XuperTV client application for Samsung Tizen via TizenBrew",
+  "packageType": "app",
+  "appName": "XuperTV",
+  "appPath": "index.html",
+  "keys": [
+    "MediaPlayPause",
+    "MediaPlay",
+    "MediaPause",
+    "MediaStop",
+    "MediaFastForward",
+    "MediaRewind"
+  ]
+}
