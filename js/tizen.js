@@ -49,13 +49,14 @@
   }
 
   function storedUrl() {
-    // Dentro de TizenBrew/standalone el relay vive en la propia TV. Una IP
-    // de PC guardada de una sesion anterior no debe pisar el loopback.
-    if (embeddedRelay) return RELAY_LOCAL_URL;
+    // TizenBrew: el relay vive en la TV y una IP de PC vieja no debe pisarlo.
+    if (embeddedRelay && !standaloneRelay) return RELAY_LOCAL_URL;
     try {
-      return normalizeUrl(localStorage.getItem(STORAGE_KEY) || "");
+      // Standalone: local por defecto, pero permite un relay de PC como
+      // fallback si el servicio Tizen no arranca en un modelo antiguo.
+      return normalizeUrl(localStorage.getItem(STORAGE_KEY) || "") || (standaloneRelay ? RELAY_LOCAL_URL : "");
     } catch (e) {
-      return "";
+      return standaloneRelay ? RELAY_LOCAL_URL : "";
     }
   }
 
@@ -64,7 +65,11 @@
   }
 
   function persistUrl(value) {
-    var url = embeddedRelay ? RELAY_LOCAL_URL : normalizeUrl(value);
+    var url = standaloneRelay
+      ? normalizeUrl(value) || RELAY_LOCAL_URL
+      : embeddedRelay
+      ? RELAY_LOCAL_URL
+      : normalizeUrl(value);
     if (!url) return "";
     API.devServiceUrl = url;
     try {
@@ -74,7 +79,9 @@
   }
 
   // URL guardada (o default) antes de que arranque app.js
-  API.devServiceUrl = embeddedRelay
+  API.devServiceUrl = standaloneRelay
+    ? storedUrl() || RELAY_LOCAL_URL
+    : embeddedRelay
     ? RELAY_LOCAL_URL
     : storedUrl() || normalizeUrl(DEFAULT_URL);
 
