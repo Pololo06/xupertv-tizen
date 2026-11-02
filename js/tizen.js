@@ -428,13 +428,19 @@
 
   function exitApp() {
     try {
+      if (typeof history !== "undefined" && history.length > 1) {
+        history.back();
+        return;
+      }
+    } catch (e) {}
+    try {
       if (isTizen && tizen.application) {
         tizen.application.getCurrentApplication().exit();
         return;
       }
     } catch (e) {}
     try {
-      window.close();
+      window.location.href = "http://127.0.0.1:8081/tizenbrew-ui/dist/index.html";
     } catch (e) {}
   }
 
@@ -486,6 +492,13 @@
         try {
           document.activeElement.blur();
         } catch (e) {}
+      }
+      // Si estamos en la pantalla principal en la primera pestana, salir/volver a TizenBrew
+      if (window.__xuper && window.__xuper.state && window.__xuper.state.screen === "home" && window.__xuper.state.tab === 0) {
+        event.preventDefault();
+        event.stopPropagation();
+        exitApp();
+        return;
       }
       event.preventDefault();
       event.stopPropagation();
