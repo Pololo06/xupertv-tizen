@@ -75,6 +75,152 @@
     : storedUrl() || normalizeUrl(DEFAULT_URL);
 
   /* ---------------------------------------------------------------- */
+  /* Overlay de errores (diagnostico en pantalla, sin sdb)             */
+  /* ---------------------------------------------------------------- */
+
+  var errorOverlay = null,
+    errorOverlayList = null,
+    errorOverlayShown = false,
+    errorOverlayCount = 0;
+
+  function errorMessage(value) {
+    if (value === null || value === undefined) return "";
+    if (typeof value === "string") return value;
+    if (value.message) return String(value.message);
+    try {
+      return JSON.stringify(value);
+    } catch (e) {
+      return String(value);
+    }
+  }
+
+  function errorStack(value) {
+    if (!value || !value.stack) return "";
+    return String(value.stack).slice(0, 2000);
+  }
+
+  function ensureErrorOverlay() {
+    if (errorOverlay) return errorOverlay;
+    try {
+      errorOverlay = document.createElement("div");
+      errorOverlay.id = "xuper-error-overlay";
+      errorOverlay.setAttribute("role", "alert");
+      errorOverlay.style.cssText =
+        "position:fixed;left:0;top:0;right:0;bottom:0;z-index:2147483647;" +
+        "display:none;box-sizing:border-box;padding:48px 64px;" +
+        "background:rgba(0,0,0,0.94);color:#fff;" +
+        "font-family:Arial,Helvetica,sans-serif;font-size:28px;" +
+        "line-height:1.35;overflow:auto;pointer-events:none;text-align:left;";
+      errorOverlay.innerHTML =
+        '<div style="max-width:1700px;margin:0 auto">' +
+        '<div style="font-size:40px;font-weight:bold;color:#ff5a5a;margin-bottom:8px">XuperTV: error en pantalla</div>' +
+        '<div style="font-size:24px;color:#bbb;margin-bottom:28px">Haz una foto a esta pantalla y enviala. No hace falta sdb.</div>' +
+        '<div id="xuper-error-list"></div>' +
+        '<div id="xuper-error-env" style="margin-top:28px;padding-top:18px;border-top:1px solid #444;font-size:20px;color:#aaa;white-space:pre-wrap"></div>' +
+        "</div>";
+      (document.body || document.documentElement).appendChild(errorOverlay);
+      errorOverlayList = document.getElementById("xuper-error-list");
+    } catch (e) {}
+    return errorOverlay;
+  }
+
+  function showErrorOverlay(kind, message, source, line, column, extra) {
+    try {
+      ensureErrorOverlay();
+      if (!errorOverlay || !errorOverlayList) return;
+      if (errorOverlayCount < 6) {
+        errorOverlayCount++;
+        var item = document.createElement("div");
+        item.style.cssText =
+          "margin:0 0 18px;padding:16px 20px;border-left:6px solid #ff5a5a;" +
+          "background:#1a1a1a;white-space:pre-wrap;word-break:break-word;";
+        var title = document.createElement("div");
+        title.style.cssText = "font-size:22px;color:#ff9a9a;margin-bottom:6px";
+        title.textContent = kind + (errorOverlayCount > 1 ? " #" + errorOverlayCount : "");
+        var body = document.createElement("div");
+        body.textContent = [
+          "Mensaje: " + (message || "(sin mensaje)"),
+          source ? "Archivo: " + source : "",
+          line ? "Linea: " + line + (column ? ":" + column : "") : "",
+          extra ? String(extra) : ""
+        ]
+          .filter(Boolean)
+          .join("\n");
+        item.appendChild(title);
+        item.appendChild(body);
+        errorOverlayList.appendChild(item);
+      }
+
+      var env = document.getElementById("xuper-error-env");
+      if (env) {
+        var relay = window.__XUPER_RELAY_INFO || {};
+        var welcome = document.querySelector(".welcome-version");
+        env.textContent = [
+          "location.href: " + String(location.href),
+          "App: " + ((welcome && welcome.textContent) || "desconocida") +
+            " | app.js: " + (window.__xuper ? "cargado" : "NO cargado"),
+          "Tizen: " +
+            (window.__XUPER_TIZEN__ ? "si" : "no") +
+            " | userAgent: " +
+            String((typeof navigator !== "undefined" && navigator.userAgent) || ""),
+          "Relay: " +
+            (relay.version ? "v" + relay.version : "sin respuesta") +
+            (relay.publicHost ? " | host " + relay.publicHost : "") +
+            (relay.relayAvailable !== undefined ? " | ffmpeg " + (relay.relayAvailable ? "si" : "no") : ""),
+          "Hora: " + new Date().toISOString()
+        ].join("\n");
+      }
+
+      errorOverlay.style.display = "block";
+      errorOverlayShown = true;
+    } catch (e) {}
+  }
+
+  window.onerror = function (message, source, line, column, error) {
+    showErrorOverlay("window.onerror", errorMessage(message), source, line, column, errorStack(error));
+    return false;
+  };
+
+  window.addEventListener(
+    "error",
+    function (event) {
+      var target = event && event.target;
+      if (!target || target === window || !target.tagName) return;
+      var tag = String(target.tagName).toLowerCase();
+      if (tag !== "script" && tag !== "link") return;
+      showErrorOverlay(
+        "recurso no cargado",
+        tag + " no se pudo cargar",
+        target.src || target.href || "",
+        0,
+        0,
+        "tag: " + tag
+      );
+    },
+    true
+  );
+
+  window.addEventListener("unhandledrejection", function (event) {
+    var reason = event && event.reason;
+    showErrorOverlay("unhandledrejection", errorMessage(reason), "", 0, 0, errorStack(reason));
+  });
+
+  // Si js/app.js no llega a arrancar (por ejemplo, el relay murio y el
+  // proxy de TizenBrew ya no sirve archivos), no hay window.onerror.
+  // Este vigilante muestra el diagnostico igualmente.
+  setTimeout(function () {
+    if (errorOverlayShown || window.__xuper) return;
+    showErrorOverlay(
+      "arranque",
+      "js/app.js no termino de arrancar (window.__xuper no existe).",
+      "js/app.js",
+      0,
+      0,
+      "Puede ser un fallo de carga del relay o una excepcion temprana."
+    );
+  }, 12000);
+
+  /* ---------------------------------------------------------------- */
   /* Ping al relay                                                     */
   /* ---------------------------------------------------------------- */
 
@@ -138,6 +284,14 @@
     })(tries);
   }
 
+  // TizenBrew puede devolver el modulo como "xupertv", "xupertv-tizen" o
+  // "Pololo06/xupertv-tizen@<commit>". Comparar por subcadena evita fallos
+  // cuando el identificador cambia entre versiones.
+  function isXuperModule(name) {
+    var value = String(name || "").toLowerCase();
+    return value.indexOf("xupertv") !== -1;
+  }
+
   // Si TizenBrew no arranco el servicio, pedirle que lo inicie por su
   // WebSocket interno (mismo puerto que sirve esta pagina).
   function ensureEmbeddedService(callback) {
@@ -179,7 +333,9 @@
           status = null,
           i;
         for (i = 0; i < list.length; i++) {
-          if (list[i] && String(list[i].name).indexOf("xupertv-tizen") !== -1) status = list[i];
+          if (list[i] && (isXuperModule(list[i].name) || isXuperModule(list[i].fullName))) {
+            status = list[i];
+          }
         }
         if (status && !status.hasCrashed) return finish(true);
         ws.send(JSON.stringify({ type: 4, payload: true })); // GetModules
@@ -190,7 +346,9 @@
           mod = null,
           j;
         for (j = 0; j < modules.length; j++) {
-          if (modules[j] && String(modules[j].fullName).indexOf("xupertv-tizen") !== -1) mod = modules[j];
+          if (modules[j] && (isXuperModule(modules[j].fullName) || isXuperModule(modules[j].name))) {
+            mod = modules[j];
+          }
         }
         if (!mod || !mod.serviceFile) return finish(false, "el modulo no declara relay");
         ws.send(JSON.stringify({ type: 6, payload: mod })); // StartService
