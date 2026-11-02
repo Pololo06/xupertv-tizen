@@ -17,7 +17,11 @@
 
   var STORAGE_KEY = "xuper.relayUrl";
   var API = window.XUPERTV_API || (window.XUPERTV_API = {});
-  var DEFAULT_URL = API.devServiceUrl || "http://192.168.1.19:8910";
+  // En TizenBrew el relay va dentro del servicio Node de la propia TV.
+  var embeddedRelay = location.port === "8081" && location.pathname.indexOf("/module/") === 0;
+  var DEFAULT_URL = embeddedRelay
+    ? "http://127.0.0.1:8910"
+    : API.devServiceUrl || "http://192.168.1.19:8910";
 
   // Modo de reproducción inicial si el usuario aún no tiene uno guardado
   try {
@@ -103,6 +107,17 @@
     } catch (e) {
       finish(false, null, e.message || "error");
     }
+  }
+
+  // El servicio TizenBrew arranca en paralelo a la pagina: reintentar unos
+  // segundos antes de mostrar el dialogo de servidor.
+  function pingRetry(url, tries, callback) {
+    ping(url, function (ok, data, error) {
+      if (ok || tries <= 0) return callback(ok, data, error);
+      setTimeout(function () {
+        pingRetry(url, tries - 1, callback);
+      }, 400);
+    });
   }
 
   /* ---------------------------------------------------------------- */
@@ -567,7 +582,7 @@
 
   function registerTvKeys() {
     if (!isTizen || !window.tizen || !tizen.tvinputdevice) return;
-    var keys = ["MediaPlayPause", "MediaPlay", "MediaPause", "MediaStop", "MediaFastForward", "MediaRewind"];
+    var keys = ["MediaPlayPause", "MediaPlay", "MediaPause", "MediaStop", "MediaFastForward", "MediaRewind", "ChannelUp", "ChannelDown", "ChannelList", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"];
     for (var i = 0; i < keys.length; i++) {
       try {
         tizen.tvinputdevice.registerKey(keys[i]);
@@ -587,7 +602,7 @@
 
     setTimeout(function () {
       var url = currentUrl();
-      ping(url, function (ok, data) {
+      pingRetry(url, embeddedRelay ? 8 : 2, function (ok, data) {
         if (ok) {
           API.devServiceUrl = url;
           hideOverlay();

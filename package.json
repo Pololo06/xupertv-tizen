@@ -5,12 +5,26 @@
   "packageType": "app",
   "appName": "XuperTV",
   "appPath": "index.html",
+  "serviceFile": "xuper-relay-service.js",
   "keys": [
     "MediaPlayPause",
     "MediaPlay",
     "MediaPause",
     "MediaStop",
     "MediaFastForward",
-    "MediaRewind"
+    "MediaRewind",
+    "ChannelUp",
+    "ChannelDown",
+    "ChannelList",
+    "0",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "8",
+    "9"
   ]
 }

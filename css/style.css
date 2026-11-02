@@ -531,6 +531,9 @@ div, section, span { outline: none; }
   padding-left: 21px;               /* 14dp */
   overflow: hidden;
   border-radius: 10px;
+  /* La lista trae +1.000 canales: no pintar filas fuera de pantalla. */
+  content-visibility: auto;
+  contain-intrinsic-size: 0 120px;
 }
 .live-row:last-child { margin-bottom: 0; }
 .live-row .row-icon {
