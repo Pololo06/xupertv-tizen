@@ -222,7 +222,7 @@
       0,
       "Puede ser un fallo de carga del relay o una excepcion temprana."
     );
-  }, 12000);
+  }, standaloneRelay ? 20000 : 12000);
 
   /* ---------------------------------------------------------------- */
   /* Ping al relay                                                     */
